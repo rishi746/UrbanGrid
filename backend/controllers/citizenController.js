@@ -77,12 +77,11 @@ const citizenController = {
           SELECT id
           FROM complaints
           WHERE citizen_id = ?
-            AND LOWER(title) LIKE ?
-            AND pin_code = ?
-            AND submitted_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
+            AND LOWER(issue_title) LIKE ?
+            AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)
           LIMIT 1
         `,
-        [req.user.id, `%${title.toLowerCase().trim()}%`, resolvedPinCode]
+        [req.user.id, `%${title.toLowerCase().trim()}%`]
       );
 
       if (duplicateComplaint) {
@@ -91,54 +90,65 @@ const citizenController = {
         });
       }
 
-      const region = await queryOne(
+      const locationRow = await queryOne(
         `
           SELECT id
-          FROM regions
-          WHERE JSON_SEARCH(pin_codes, 'one', ?) IS NOT NULL
+          FROM locations
+          WHERE ward_no = ? AND pincode = ? AND address = ?
           LIMIT 1
         `,
-        [resolvedPinCode]
+        [wardNo, resolvedPinCode || null, areaText]
       );
 
-      const complaintPublicId = generateId('CMP');
+      let locationId = locationRow?.id ?? null;
+
+      if (!locationId) {
+        const locationResult = await run(
+          `
+            INSERT INTO locations (
+              region_id,
+              ward_no,
+              address,
+              pincode
+            )
+            VALUES (?, ?, ?, ?)
+          `,
+          [
+            req.user.region || null,
+            wardNo,
+            areaText,
+            resolvedPinCode || null
+          ]
+        );
+
+        locationId = locationResult.insertId;
+      }
+
       const result = await run(
         `
           INSERT INTO complaints (
-            complaint_id,
             citizen_id,
-            title,
-            description,
+            location_id,
+            issue_title,
+            issue_description,
             category,
-            images,
-            address,
-            pin_code,
-            ward_no,
-            region_id,
-            latitude,
-            longitude
+            images
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?)
         `,
         [
-          complaintPublicId,
           req.user.id,
+          locationId,
           title.trim(),
           description.trim(),
-          category,
-          JSON.stringify(req.files ? req.files.map(file => ({ url: `/uploads/${file.filename}` })) : []),
-          areaText,
-          resolvedPinCode,
-          wardNo,
-          region?.id || null,
-          null,
-          null
+          category || null,
+          JSON.stringify(req.files ? req.files.map(file => ({ url: `/uploads/${file.filename}` })) : [])
         ]
       );
 
       const complaint = await queryOne(
         `
-          SELECT id, complaint_id, title, status, submitted_at
+          SELECT id, issue_title, status, created_at
           FROM complaints
           WHERE id = ?
           LIMIT 1
@@ -151,11 +161,11 @@ const citizenController = {
         complaint: {
           id: complaint.id,
           _id: complaint.id,
-          complaintId: complaint.complaint_id,
-          title: complaint.title,
+          complaintId: complaint.id,
+          title: complaint.issue_title,
           status: complaint.status,
           wardNo,
-          submittedAt: complaint.submitted_at
+          submittedAt: complaint.created_at
         }
       });
     } catch (error) {
@@ -169,24 +179,47 @@ const citizenController = {
       const rows = await query(
         `
           SELECT
-            c.*,
-            m.id AS ministry_ref_id,
+            c.id AS complaint_id,
+            c.citizen_id,
+            c.location_id,
+            c.issue_title,
+            c.issue_description,
+            c.category,
+            c.images,
+            c.status,
+            c.verified_by,
+            c.verified_at,
+            c.routed_to_ministry_id,
+            c.routed_at,
+            c.official_viewed_at,
+            c.contractor_notified_at,
+            c.work_completed_at,
+            c.created_at,
+            c.updated_at,
+            loc.address,
+            loc.pincode AS pin_code,
+            loc.ward_no,
+            c.routed_to_ministry_id AS ministry_ref_id,
             m.name AS ministry_ref_name,
             m.code AS ministry_ref_code,
-            d.id AS department_ref_id,
-            d.name AS department_ref_name,
-            d.code AS department_ref_code,
-            d.responsibilities AS department_ref_responsibilities,
-            d.ministry_id AS department_ref_ministry_id,
-            d.is_active AS department_ref_is_active,
-            d.created_at AS department_ref_created_at,
-            d.updated_at AS department_ref_updated_at,
+            m.description AS ministry_ref_description,
+            NULL AS ministry_ref_is_active,
+            m.created_at AS ministry_ref_created_at,
+            NULL AS ministry_ref_updated_at,
+            NULL AS department_ref_id,
+            NULL AS department_ref_name,
+            NULL AS department_ref_code,
+            NULL AS department_ref_responsibilities,
+            NULL AS department_ref_is_active,
+            NULL AS department_ref_ministry_id,
+            NULL AS department_ref_created_at,
+            NULL AS department_ref_updated_at,
             t.id AS tender_ref_id,
             t.tender_id AS tender_ref_tender_id,
             t.status AS tender_ref_status
           FROM complaints c
-          LEFT JOIN ministries m ON m.id = c.ministry_id
-          LEFT JOIN departments d ON d.id = c.department_id
+          LEFT JOIN locations loc ON loc.id = c.location_id
+          LEFT JOIN ministries m ON m.id = c.routed_to_ministry_id
           LEFT JOIN tenders t ON t.complaint_id = c.id
           WHERE c.citizen_id = ?
           ORDER BY c.created_at DESC
@@ -213,29 +246,52 @@ const citizenController = {
       const row = await queryOne(
         `
           SELECT
-            c.*,
+            c.id AS complaint_id,
+            c.citizen_id,
+            c.location_id,
+            c.issue_title,
+            c.issue_description,
+            c.category,
+            c.images,
+            c.status,
+            c.verified_by,
+            c.verified_at,
+            c.routed_to_ministry_id,
+            c.routed_at,
+            c.official_viewed_at,
+            c.contractor_notified_at,
+            c.work_completed_at,
+            c.created_at,
+            c.updated_at,
+            loc.address,
+            loc.pincode AS pin_code,
+            loc.ward_no,
             vote_stats.vote_count,
             vote_stats.vote_average,
             my_vote.vote_value AS my_vote,
-            m.id AS ministry_ref_id,
+            c.routed_to_ministry_id AS ministry_ref_id,
             m.name AS ministry_ref_name,
             m.code AS ministry_ref_code,
-            d.id AS department_ref_id,
-            d.name AS department_ref_name,
-            d.code AS department_ref_code,
-            d.responsibilities AS department_ref_responsibilities,
-            d.ministry_id AS department_ref_ministry_id,
-            d.is_active AS department_ref_is_active,
-            d.created_at AS department_ref_created_at,
-            d.updated_at AS department_ref_updated_at,
+            m.description AS ministry_ref_description,
+            NULL AS ministry_ref_is_active,
+            m.created_at AS ministry_ref_created_at,
+            NULL AS ministry_ref_updated_at,
+            NULL AS department_ref_id,
+            NULL AS department_ref_name,
+            NULL AS department_ref_code,
+            NULL AS department_ref_responsibilities,
+            NULL AS department_ref_is_active,
+            NULL AS department_ref_ministry_id,
+            NULL AS department_ref_created_at,
+            NULL AS department_ref_updated_at,
             u.id AS reviewed_by_user_id,
             u.name AS reviewed_by_user_name,
             u.email AS reviewed_by_user_email,
             u.role AS reviewed_by_user_role,
             u.phone AS reviewed_by_user_phone,
             u.address AS reviewed_by_user_address,
-            u.is_active AS reviewed_by_user_is_active,
-            u.is_email_verified AS reviewed_by_user_is_email_verified,
+            NULL AS reviewed_by_user_is_active,
+            NULL AS reviewed_by_user_is_email_verified,
             u.created_at AS reviewed_by_user_created_at,
             u.updated_at AS reviewed_by_user_updated_at
           FROM complaints c
@@ -246,10 +302,10 @@ const citizenController = {
           ) vote_stats ON vote_stats.complaint_id = c.id
           LEFT JOIN complaint_votes my_vote
             ON my_vote.complaint_id = c.id AND my_vote.voter_user_id = ?
-          LEFT JOIN ministries m ON m.id = c.ministry_id
-          LEFT JOIN departments d ON d.id = c.department_id
-          LEFT JOIN users u ON u.id = c.reviewed_by
-          WHERE c.id = ? AND (c.citizen_id = ? OR c.ward_no = ?)
+          LEFT JOIN locations loc ON loc.id = c.location_id
+          LEFT JOIN ministries m ON m.id = c.routed_to_ministry_id
+          LEFT JOIN users u ON u.id = c.verified_by
+          WHERE c.id = ? AND (c.citizen_id = ? OR loc.ward_no = ?)
           LIMIT 1
         `,
         [req.user.id, req.params.id, req.user.id, req.user.wardNo || req.user.pincode || null]
@@ -263,18 +319,17 @@ const citizenController = {
 
       const complaint = mapComplaint(row, {
         ministry: mapMinistry(row, 'ministry_ref_'),
-        department: mapDepartment(row, 'department_ref_'),
         reviewedBy: mapSimpleUser(row, 'reviewed_by_user_'),
         tender: tenderRow ? mapTender(tenderRow) : null
       });
 
       res.json({
-        complaint: {
+          complaint: {
           ...complaint,
           wardNo: row.ward_no ?? complaint.wardNo ?? null,
           voteSummary: mapComplaintVoteSummary(row),
           tracking: {
-            submittedAt: row.submitted_at ?? null,
+            submittedAt: row.created_at ?? null,
             officialViewedAt: row.official_viewed_at ?? null,
             contractorNotifiedAt: row.contractor_notified_at ?? null,
             workCompletedAt: row.work_completed_at ?? null
@@ -297,7 +352,26 @@ const citizenController = {
       const rows = await query(
         `
           SELECT
-            c.*,
+            c.id AS complaint_id,
+            c.citizen_id,
+            c.location_id,
+            c.issue_title,
+            c.issue_description,
+            c.category,
+            c.images,
+            c.status,
+            c.verified_by,
+            c.verified_at,
+            c.routed_to_ministry_id,
+            c.routed_at,
+            c.official_viewed_at,
+            c.contractor_notified_at,
+            c.work_completed_at,
+            c.created_at,
+            c.updated_at,
+            loc.address,
+            loc.pincode AS pin_code,
+            loc.ward_no,
             citizen.id AS citizen_id,
             citizen.name AS citizen_name,
             citizen.email AS citizen_email,
@@ -305,18 +379,19 @@ const citizenController = {
             citizen.phone AS citizen_phone,
             citizen.address AS citizen_address,
             citizen.ward_no AS citizen_ward_no,
-            citizen.is_active AS citizen_is_active,
-            citizen.is_email_verified AS citizen_is_email_verified,
+            NULL AS citizen_is_active,
+            NULL AS citizen_is_email_verified,
             citizen.created_at AS citizen_created_at,
             citizen.updated_at AS citizen_updated_at,
             vote_stats.vote_count,
             vote_stats.vote_average,
             my_vote.vote_value AS my_vote,
             CASE
-              WHEN c.citizen_id <> ? AND c.ward_no = ? AND c.status NOT IN ('completed', 'closed') THEN 1
+              WHEN c.citizen_id <> ? AND loc.ward_no = ? AND c.status NOT IN ('resolved') THEN 1
               ELSE 0
             END AS can_vote
           FROM complaints c
+          LEFT JOIN locations loc ON loc.id = c.location_id
           LEFT JOIN users citizen ON citizen.id = c.citizen_id
           LEFT JOIN (
             SELECT complaint_id, COUNT(*) AS vote_count, AVG(vote_value) AS vote_average
@@ -325,7 +400,7 @@ const citizenController = {
           ) vote_stats ON vote_stats.complaint_id = c.id
           LEFT JOIN complaint_votes my_vote
             ON my_vote.complaint_id = c.id AND my_vote.voter_user_id = ?
-          WHERE c.ward_no = ? AND c.status NOT IN ('completed', 'closed')
+          WHERE loc.ward_no = ? AND c.status NOT IN ('resolved')
           ORDER BY COALESCE(vote_stats.vote_average, 0) DESC, c.created_at DESC
         `,
         [req.user.id, wardNo, req.user.id, wardNo]

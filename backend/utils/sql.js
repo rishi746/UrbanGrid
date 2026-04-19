@@ -11,6 +11,34 @@ const queryOne = async (sql, params = []) => {
   return rows[0] || null;
 };
 
+const tableHasColumn = async (tableName, columnName) => {
+  const row = await queryOne(
+    `
+      SELECT 1 AS found
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND COLUMN_NAME = ?
+      LIMIT 1
+    `,
+    [tableName, columnName]
+  );
+
+  return Boolean(row);
+};
+
+const ensureColumn = async (tableName, columnName, columnDefinition, placementClause = '') => {
+  const exists = await tableHasColumn(tableName, columnName);
+
+  if (exists) {
+    return false;
+  }
+
+  const clause = placementClause ? ` ${placementClause}` : '';
+  await run(`ALTER TABLE ${tableName} ADD COLUMN ${columnDefinition}${clause}`);
+  return true;
+};
+
 const run = async (sql, params = []) => {
   const pool = connectDB.getPool();
   const [result] = await pool.execute(sql, params);
@@ -87,6 +115,8 @@ module.exports = {
   queryOne,
   run,
   withTransaction,
+  tableHasColumn,
+  ensureColumn,
   parseJsonArray,
   parseJsonObject
 };

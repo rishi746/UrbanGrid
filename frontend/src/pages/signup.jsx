@@ -27,14 +27,6 @@ export default function SignUpPage() {
             className="max-w-xs p-8 md:max-w-sm lg:max-w-md"
           />
         </div>
-        <div className="absolute bottom-0 left-0 right-0 p-8">
-          <blockquote className="space-y-2 text-foreground/60">
-            <p className="text-lg">
-              "This tool has saved us countless hours of manual review. The AI-powered insights are a game-changer."
-            </p>
-            <footer className="text-sm text-muted-foreground">Aryan Bokolia, Student</footer>
-          </blockquote>
-        </div>
       </div>
     </div>
   );

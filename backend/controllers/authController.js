@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const generateToken = require('../utils/generateToken');
-const { queryOne, run, withTransaction } = require('../utils/sql');
+const { queryOne, run, withTransaction, ensureColumn, tableHasColumn } = require('../utils/sql');
 const { getAuthUserById, getUserProfileById } = require('../utils/userQueries');
 
 const createHttpError = (statusCode, message) => {
@@ -23,6 +23,38 @@ const normalizeArrayField = (value, fallback = []) => {
   }
 
   return fallback;
+};
+
+const ensureProfileSchema = async () => {
+  await ensureColumn('users', 'address', 'address VARCHAR(255) NULL', 'AFTER phone');
+  await ensureColumn('users', 'pincode', 'pincode VARCHAR(10) NULL', 'AFTER address');
+};
+
+const ensureUserSettingsSchema = async () => {
+  const exists = await tableHasColumn('user_settings', 'user_id');
+
+  if (exists) {
+    return;
+  }
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS user_settings (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id BIGINT UNSIGNED NOT NULL,
+      theme ENUM('light', 'dark', 'system') NOT NULL DEFAULT 'system',
+      language VARCHAR(10) NOT NULL DEFAULT 'en',
+      email_notifications TINYINT(1) NOT NULL DEFAULT 1,
+      sms_notifications TINYINT(1) NOT NULL DEFAULT 0,
+      push_notifications TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_user_settings_user_id (user_id),
+      CONSTRAINT fk_user_settings_user
+        FOREIGN KEY (user_id) REFERENCES users (id)
+        ON DELETE CASCADE
+    )
+  `);
 };
 
 const authController = {
@@ -89,16 +121,20 @@ const authController = {
       }
 
       const normalizedWardNo = wardNo ? String(wardNo).trim() : null;
+      const normalizedCompanyName = companyName ? companyName.trim() : null;
+      const normalizedRegistrationNumber = registrationNumber ? registrationNumber.trim() : null;
+      const normalizedGstNumber = gstNumber ? gstNumber.trim() : null;
+      const normalizedSpecializations = JSON.stringify(normalizeArrayField(specializations, ['general']));
 
       const userId = await withTransaction(async (tx) => {
         if (userRole === 'contractor') {
-          if (!companyName || !registrationNumber) {
+          if (!normalizedCompanyName || !normalizedRegistrationNumber) {
             throw createHttpError(400, 'Company name and registration number are required for contractors');
           }
 
           const existingContractor = await tx.queryOne(
-            'SELECT id FROM contractors WHERE registration_number = ? LIMIT 1',
-            [registrationNumber.trim()]
+            'SELECT id FROM users WHERE registration_number = ? LIMIT 1',
+            [normalizedRegistrationNumber]
           );
 
           if (existingContractor) {
@@ -107,67 +143,99 @@ const authController = {
         }
 
         const hashedPassword = await bcrypt.hash(password, 12);
+        let locationId = null;
+
+        if (address?.trim() && pincode?.trim() && normalizedWardNo) {
+          const regionRow = regionId
+            ? { id: Number(regionId) }
+            : await tx.queryOne(
+                `
+                  SELECT id
+                  FROM regions
+                  WHERE JSON_SEARCH(pin_codes, 'one', ?) IS NOT NULL
+                  LIMIT 1
+                `,
+                [pincode.trim()]
+              );
+
+          if (regionRow?.id) {
+            const existingLocation = await tx.queryOne(
+              `
+                SELECT id
+                FROM locations
+                WHERE ward_no = ? AND pincode = ? LIMIT 1
+              `,
+              [normalizedWardNo, pincode.trim()]
+            );
+
+            if (existingLocation) {
+              locationId = existingLocation.id;
+            } else {
+              const locationResult = await tx.run(
+                `
+                  INSERT INTO locations (
+                    region_id,
+                    ward_no,
+                    address,
+                    pincode
+                  )
+                  VALUES (?, ?, ?, ?)
+                `,
+                [
+                  regionRow.id,
+                  normalizedWardNo,
+                  address.trim(),
+                  pincode.trim()
+                ]
+              );
+
+              locationId = locationResult.insertId;
+            }
+          }
+        }
+
         const userResult = await tx.run(
           `
             INSERT INTO users (
               name,
               email,
-              password,
+              password_hash,
               role,
+              location_id,
               ministry_id,
-              department_id,
               region_id,
               phone,
-              address,
-              pincode,
-            ward_no,
-            is_email_verified,
-            email_verification_token
+              ward_no,
+              company_name,
+              registration_number,
+              contractor_rating,
+              total_projects,
+              completed_projects
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
             name.trim(),
             normalizedEmail,
             hashedPassword,
             userRole,
+            locationId,
             ministryId ? Number(ministryId) : null,
-            departmentId ? Number(departmentId) : null,
             regionId ? Number(regionId) : null,
             phone?.trim() || null,
-            address?.trim() || null,
-            pincode?.trim() || null,
             normalizedWardNo,
-            0,
-            crypto.randomBytes(32).toString('hex')
+            userRole === 'contractor' ? normalizedCompanyName : null,
+            userRole === 'contractor' ? normalizedRegistrationNumber : null,
+            userRole === 'contractor' ? 0 : null,
+            userRole === 'contractor' ? 0 : null,
+            userRole === 'contractor' ? 0 : null
           ]
         );
-
-        if (userRole === 'contractor') {
-          await tx.run(
-            `
-              INSERT INTO contractors (
-                user_id,
-                company_name,
-                registration_number,
-                gst_number,
-                specializations
-              )
-              VALUES (?, ?, ?, ?, ?)
-            `,
-            [
-              userResult.insertId,
-              companyName.trim(),
-              registrationNumber.trim(),
-              gstNumber?.trim() || null,
-              JSON.stringify(normalizeArrayField(specializations, ['general']))
-            ]
-          );
-        }
 
         return userResult.insertId;
       });
 
+      await ensureProfileSchema();
       const user = await getUserProfileById(userId);
 
       res.status(201).json({
@@ -206,12 +274,12 @@ const authController = {
             id,
             name,
             email,
-            password,
+            password_hash AS password,
             role,
-            is_active,
-            is_email_verified,
+            NULL AS is_active,
+            NULL AS is_email_verified,
             failed_login_attempts,
-            lock_until
+            account_locked_until AS lock_until
           FROM users
           WHERE email = ?
           LIMIT 1
@@ -253,7 +321,7 @@ const authController = {
         await run(
           `
             UPDATE users
-            SET failed_login_attempts = ?, lock_until = ?, updated_at = CURRENT_TIMESTAMP
+            SET failed_login_attempts = ?, account_locked_until = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
           `,
           [failedAttempts, lockUntil, userRow.id]
@@ -269,12 +337,13 @@ const authController = {
       await run(
         `
           UPDATE users
-          SET failed_login_attempts = 0, lock_until = NULL, last_login = NOW(), updated_at = CURRENT_TIMESTAMP
+          SET failed_login_attempts = 0, account_locked_until = NULL, last_login = NOW(), updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
         `,
         [userRow.id]
       );
 
+      await ensureProfileSchema();
       const user = await getAuthUserById(userRow.id);
 
       res.json({
@@ -302,6 +371,7 @@ const authController = {
 
   refresh: async (req, res) => {
     try {
+      await ensureProfileSchema();
       const user = await getAuthUserById(req.user.id);
 
       if (!user || !user.isActive) {
@@ -327,6 +397,7 @@ const authController = {
 
   getMe: async (req, res) => {
     try {
+      await ensureProfileSchema();
       const user = await getUserProfileById(req.user.id);
 
       if (!user) {
@@ -341,6 +412,7 @@ const authController = {
 
   getProfile: async (req, res) => {
     try {
+      await ensureProfileSchema();
       const user = await getUserProfileById(req.user.id);
 
       if (!user) {
@@ -371,6 +443,8 @@ const authController = {
 
   updateProfile: async (req, res) => {
     try {
+      await ensureProfileSchema();
+
       const { name, phone, address, pincode, wardNo } = req.body;
       const updates = [];
       const params = [];
@@ -422,6 +496,8 @@ const authController = {
 
   getSettings: async (req, res) => {
     try {
+      await ensureUserSettingsSchema();
+
       const existing = await queryOne(
         `
           SELECT theme, language, email_notifications, sms_notifications, push_notifications
@@ -469,6 +545,8 @@ const authController = {
 
   updateSettings: async (req, res) => {
     try {
+      await ensureUserSettingsSchema();
+
       const {
         theme,
         language,
@@ -521,6 +599,7 @@ const authController = {
           });
         }
 
+        await ensureProfileSchema();
         const authUser = await getAuthUserById(req.user.id);
         const isMatch = await bcrypt.compare(currentPassword, authUser.password);
 
@@ -530,7 +609,7 @@ const authController = {
 
         const hashedPassword = await bcrypt.hash(newPassword, 12);
         await run(
-          'UPDATE users SET password = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+          'UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
           [hashedPassword, req.user.id]
         );
       }

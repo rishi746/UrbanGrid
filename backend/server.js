@@ -3,6 +3,7 @@ const dotenv = require('dotenv');
 const cors = require('cors');
 const path = require('path');
 const connectDB = require('./config/db');
+const { ensureColumn, run } = require('./utils/sql');
 const { security, apiLimiter, authLimiter, validateInput, sanitizeRequest } = require('./middleware/validation');
 
 dotenv.config();
@@ -20,6 +21,26 @@ const app = express();
 
 const startServer = async () => {
   await connectDB();
+  await ensureColumn('users', 'address', 'address VARCHAR(255) NULL', 'AFTER phone');
+  await ensureColumn('users', 'pincode', 'pincode VARCHAR(10) NULL', 'AFTER address');
+  await run(`
+    CREATE TABLE IF NOT EXISTS user_settings (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      user_id BIGINT UNSIGNED NOT NULL,
+      theme ENUM('light', 'dark', 'system') NOT NULL DEFAULT 'system',
+      language VARCHAR(10) NOT NULL DEFAULT 'en',
+      email_notifications TINYINT(1) NOT NULL DEFAULT 1,
+      sms_notifications TINYINT(1) NOT NULL DEFAULT 0,
+      push_notifications TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_user_settings_user_id (user_id),
+      CONSTRAINT fk_user_settings_user
+        FOREIGN KEY (user_id) REFERENCES users (id)
+        ON DELETE CASCADE
+    )
+  `);
 
 // CORS configuration
 const corsOptions = {
