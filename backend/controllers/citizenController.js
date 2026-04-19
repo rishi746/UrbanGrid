@@ -52,9 +52,9 @@ const citizenController = {
   submitComplaint: async (req, res) => {
     try {
       const { title, description, category, area, address, pinCode } = req.body;
-      const wardNo = String(req.user?.wardNo || req.user?.pincode || req.body?.wardNo || '').trim();
+      const wardNo = String(req.body?.wardNo || req.user?.wardNo || '').trim();
       const areaText = String(area || address || '').trim();
-      const resolvedPinCode = String(pinCode || wardNo || '').trim();
+      const resolvedPinCode = String(pinCode || req.user?.pincode || '000000').trim();
 
       if (!title || !description || !category || !areaText || !wardNo) {
         return res.status(400).json({ message: 'Title, description, area, and ward number are required' });
@@ -90,14 +90,48 @@ const citizenController = {
         });
       }
 
+      let regionId = req.user.region || null;
+
+      if (!regionId) {
+        const userLocation = req.user.locationId
+          ? await queryOne('SELECT region_id FROM locations WHERE id = ? LIMIT 1', [req.user.locationId])
+          : null;
+        regionId = userLocation?.region_id || null;
+      }
+
+      if (!regionId) {
+        const existingWardLocation = await queryOne(
+          'SELECT region_id FROM locations WHERE ward_no = ? LIMIT 1',
+          [wardNo]
+        );
+        regionId = existingWardLocation?.region_id || null;
+      }
+
+      if (!regionId) {
+        const existingRegion = await queryOne('SELECT id FROM regions ORDER BY id LIMIT 1');
+
+        if (existingRegion) {
+          regionId = existingRegion.id;
+        } else {
+          const regionResult = await run(
+            `
+              INSERT INTO regions (name, code)
+              VALUES (?, ?)
+            `,
+            ['Unassigned Region', 'UNASSIGNED']
+          );
+          regionId = regionResult.insertId;
+        }
+      }
+
       const locationRow = await queryOne(
         `
           SELECT id
           FROM locations
-          WHERE ward_no = ? AND pincode = ? AND address = ?
+          WHERE region_id = ? AND ward_no = ?
           LIMIT 1
         `,
-        [wardNo, resolvedPinCode || null, areaText]
+        [regionId, wardNo]
       );
 
       let locationId = locationRow?.id ?? null;
@@ -114,10 +148,10 @@ const citizenController = {
             VALUES (?, ?, ?, ?)
           `,
           [
-            req.user.region || null,
+            regionId,
             wardNo,
             areaText,
-            resolvedPinCode || null
+            resolvedPinCode
           ]
         );
 

@@ -2,9 +2,11 @@ const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const hpp = require('hpp');
 
+const isProduction = process.env.NODE_ENV === 'production';
+
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  max: parseInt(process.env.API_RATE_LIMIT, 10) || (isProduction ? 100 : 1000),
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
@@ -12,7 +14,7 @@ const apiLimiter = rateLimit({
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 auth requests per windowMs
+  max: parseInt(process.env.AUTH_RATE_LIMIT, 10) || (isProduction ? 5 : 100),
   message: 'Too many authentication attempts, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,

@@ -144,33 +144,35 @@ const authController = {
 
         const hashedPassword = await bcrypt.hash(password, 12);
         let locationId = null;
+        const normalizedAddress = address?.trim() || null;
+        const normalizedPincode = pincode?.trim() || null;
 
-        if (address?.trim() && pincode?.trim() && normalizedWardNo) {
-          const regionRow = regionId
-            ? { id: Number(regionId) }
-            : await tx.queryOne(
-                `
-                  SELECT id
-                  FROM regions
-                  WHERE JSON_SEARCH(pin_codes, 'one', ?) IS NOT NULL
-                  LIMIT 1
-                `,
-                [pincode.trim()]
-              );
+        if (normalizedAddress && normalizedPincode && normalizedWardNo) {
+          const existingLocation = await tx.queryOne(
+            `
+              SELECT id, region_id
+              FROM locations
+              WHERE ward_no = ? AND pincode = ? LIMIT 1
+            `,
+            [normalizedWardNo, normalizedPincode]
+          );
 
-          if (regionRow?.id) {
-            const existingLocation = await tx.queryOne(
-              `
-                SELECT id
-                FROM locations
-                WHERE ward_no = ? AND pincode = ? LIMIT 1
-              `,
-              [normalizedWardNo, pincode.trim()]
-            );
+          if (existingLocation) {
+            locationId = existingLocation.id;
+          } else {
+            const regionRow = regionId
+              ? await tx.queryOne('SELECT id FROM regions WHERE id = ? LIMIT 1', [Number(regionId)])
+              : await tx.queryOne(
+                  `
+                    SELECT region_id AS id
+                    FROM locations
+                    WHERE pincode = ?
+                    LIMIT 1
+                  `,
+                  [normalizedPincode]
+                );
 
-            if (existingLocation) {
-              locationId = existingLocation.id;
-            } else {
+            if (regionRow?.id) {
               const locationResult = await tx.run(
                 `
                   INSERT INTO locations (
@@ -184,8 +186,8 @@ const authController = {
                 [
                   regionRow.id,
                   normalizedWardNo,
-                  address.trim(),
-                  pincode.trim()
+                  normalizedAddress,
+                  normalizedPincode
                 ]
               );
 
@@ -205,6 +207,8 @@ const authController = {
               ministry_id,
               region_id,
               phone,
+              address,
+              pincode,
               ward_no,
               company_name,
               registration_number,
@@ -212,7 +216,7 @@ const authController = {
               total_projects,
               completed_projects
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `,
           [
             name.trim(),
@@ -223,6 +227,8 @@ const authController = {
             ministryId ? Number(ministryId) : null,
             regionId ? Number(regionId) : null,
             phone?.trim() || null,
+            normalizedAddress,
+            normalizedPincode,
             normalizedWardNo,
             userRole === 'contractor' ? normalizedCompanyName : null,
             userRole === 'contractor' ? normalizedRegistrationNumber : null,

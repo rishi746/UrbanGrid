@@ -25,6 +25,16 @@ const getStatusLabel = (status) => {
   return "Received";
 };
 
+const getLocationLabel = (complaint, wardNo) => {
+  const pinCode = String(complaint.pinCode || "").trim();
+
+  if (pinCode && pinCode !== "000000") {
+    return pinCode;
+  }
+
+  return complaint.wardNo || wardNo ? `Ward ${complaint.wardNo || wardNo}` : "N/A";
+};
+
 export function WardComplaintsPanel({
   wardNo,
   complaints,
@@ -83,7 +93,7 @@ export function WardComplaintsPanel({
                       <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
                         <span className="inline-flex items-center gap-1">
                           <MapPin className="size-3.5" />
-                          {complaint.pinCode || complaint.wardNo || `Ward ${wardNo || "N/A"}`}
+                          {getLocationLabel(complaint, wardNo)}
                         </span>
                         <span>Votes: {complaint.voteSummary?.totalVotes || 0}</span>
                         <span>Priority: {(complaint.voteSummary?.averageVote || 0).toFixed(1)}</span>
@@ -121,7 +131,7 @@ export function WardComplaintsPanel({
               <div className="rounded-xl border border-border/60 p-3">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Location</p>
                 <p className="mt-1 text-sm font-medium">{selectedComplaint.address || "N/A"}</p>
-                <p className="text-xs text-muted-foreground">{selectedComplaint.pinCode || `Ward ${selectedComplaint.wardNo || wardNo || "N/A"}`}</p>
+                <p className="text-xs text-muted-foreground">{getLocationLabel(selectedComplaint, wardNo)}</p>
               </div>
               <div className="rounded-xl border border-border/60 p-3">
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Ward Priority</p>

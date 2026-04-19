@@ -100,14 +100,14 @@ The frontend runs on http://localhost:5173 and the backend API runs on http://lo
 
 ### MySQL Setup
 
-Run the SQL scripts before starting backend:
+Create the database, then run the SQL script before starting the backend:
 
 ```bash
-mysql -u root -p < backend/sql/schema.sql
-mysql -u root -p < backend/sql/seed.sql
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS urbangrid"
+mysql -u root -p urbangrid < backend/sql/prd_zero_redundancy.sql
 ```
 
-Default seeded login password for all demo users is `Admin@123`.
+Create `backend/.env` from `backend/.env.example` and set `MYSQL_PASSWORD` to your local MySQL password.
 
 ---
 

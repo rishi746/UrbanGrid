@@ -116,9 +116,12 @@ const mapContractor = (row, prefix = '') => {
   });
 };
 
-const mapComplaint = (row, extra = {}) => withId({
-  id: row.id,
-  complaintId: row.complaint_id ?? row.complaintId ?? row.id,
+const mapComplaint = (row, extra = {}) => {
+  const id = row.id ?? row.complaint_row_id ?? row.complaint_id;
+
+  return withId({
+  id,
+  complaintId: row.public_complaint_id ?? row.complaintId ?? id,
   citizen: extra.citizen ?? row.citizen_id ?? null,
   title: row.title ?? row.issue_title ?? null,
   description: row.description ?? row.issue_description ?? null,
@@ -143,6 +146,7 @@ const mapComplaint = (row, extra = {}) => withId({
   createdAt: row.created_at ?? null,
   updatedAt: row.updated_at ?? null
 });
+};
 
 const mapTender = (row, extra = {}) => withId({
   id: row.id,
